@@ -22,11 +22,12 @@ MAX_PRICE = 250.0
 REQUIRE_WEEKLY_OPTIONS = True
 LIMIT_TICKERS = None  # Set an int for quick testing.
 
-MIN_ABS_SLOPE_PER_DAY = 0.05  # Skip near-flat channels.
+MIN_ABS_SLOPE_PER_DAY = 0.0  # Skip near-flat channels.
 INCLUDE_NEGATIVE_SLOPES = False
 MIN_STD_DEV_BELOW_MEAN = 1.0  # Require current price <= mean - (N * std).
 
-LOOKBACK_MONTHS = 3
+LOOKBACK_WEEKS = 9
+LOOKBACK_DAYS = LOOKBACK_WEEKS * 7
 FUTURE_EXTENSION_MONTHS = 2
 CHANNEL_STD_DEV = 2.0
 
@@ -42,8 +43,8 @@ YF_THREADS = False
 PRICE_BATCH_SIZE = 50
 
 HOURLY_INTERVAL = "1h"
-HOURLY_PERIOD_DAYS = 90
-MIN_HOURLY_COVERAGE_DAYS = 80
+HOURLY_PERIOD_DAYS = LOOKBACK_DAYS
+MIN_HOURLY_COVERAGE_DAYS = LOOKBACK_DAYS - 3
 
 WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
@@ -237,7 +238,7 @@ def fetch_price_history(yf_symbol: str) -> tuple[pd.Series, str]:
     try:
         daily = yf.download(
             tickers=yf_symbol,
-            period=f"{LOOKBACK_MONTHS}mo",
+            period=f"{LOOKBACK_DAYS}d",
             interval="1d",
             auto_adjust=False,
             threads=YF_THREADS,
@@ -307,7 +308,7 @@ def build_html_report(results_df: pd.DataFrame) -> str:
         f"Weekly options required: {REQUIRE_WEEKLY_OPTIONS}",
         f"Min abs slope/day: {MIN_ABS_SLOPE_PER_DAY}",
         f"Min std below mean at current date: {MIN_STD_DEV_BELOW_MEAN}",
-        f"Lookback: {LOOKBACK_MONTHS} months",
+        f"Lookback: {LOOKBACK_WEEKS} weeks",
         f"Forward extension: {FUTURE_EXTENSION_MONTHS} months",
     ]
 
@@ -380,7 +381,7 @@ def build_html_report(results_df: pd.DataFrame) -> str:
 </head>
 <body>
   <h1>Stock Regression Channels</h1>
-  <p class="subhead">Generated {escape(timestamp)}. Slope based on {LOOKBACK_MONTHS} month regression.</p>
+  <p class="subhead">Generated {escape(timestamp)}. Slope based on {LOOKBACK_WEEKS} week regression.</p>
   <ul class="criteria">
     {''.join(f'<li>{escape(item)}</li>' for item in criteria)}
   </ul>
