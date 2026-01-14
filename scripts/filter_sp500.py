@@ -20,6 +20,7 @@ import yfinance as yf
 # --- User-editable filters and settings ---
 MAX_PRICE = 250.0
 REQUIRE_WEEKLY_OPTIONS = True
+EXCLUDE_EARNINGS_WITHIN_WEEKS = 4
 LIMIT_TICKERS = None  # Set an int for quick testing.
 
 MIN_ABS_SLOPE_PER_DAY = 0.0  # Skip near-flat channels.
@@ -216,6 +217,66 @@ def has_weekly_options(yf_symbol: str) -> bool:
     return False
 
 
+def coerce_date(value: object) -> date | None:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    try:
+        parsed = pd.to_datetime(value, errors="coerce")
+    except Exception:
+        return None
+    if pd.isna(parsed):
+        return None
+    if isinstance(parsed, pd.DatetimeIndex):
+        if len(parsed) == 0:
+            return None
+        parsed = parsed[0]
+    if isinstance(parsed, pd.Timestamp):
+        return parsed.to_pydatetime().date()
+    if isinstance(parsed, datetime):
+        return parsed.date()
+    return None
+
+
+def get_next_earnings_date(yf_symbol: str) -> date | None:
+    today = date.today()
+    ticker = yf.Ticker(yf_symbol)
+    candidates: list[date] = []
+
+    try:
+        earnings_df = ticker.get_earnings_dates(limit=8)
+    except Exception:
+        earnings_df = None
+
+    if isinstance(earnings_df, pd.DataFrame) and not earnings_df.empty:
+        for ts in earnings_df.index:
+            earnings_date = coerce_date(ts)
+            if earnings_date and earnings_date >= today:
+                candidates.append(earnings_date)
+
+    if not candidates:
+        try:
+            calendar = ticker.calendar
+        except Exception:
+            calendar = {}
+
+        raw_dates = calendar.get("Earnings Date")
+        if raw_dates is not None:
+            if isinstance(raw_dates, (list, tuple, pd.Series, pd.Index, np.ndarray)):
+                values = raw_dates
+            else:
+                values = [raw_dates]
+            for value in values:
+                earnings_date = coerce_date(value)
+                if earnings_date and earnings_date >= today:
+                    candidates.append(earnings_date)
+
+    if not candidates:
+        return None
+    return min(candidates)
+
+
 def fetch_price_history(yf_symbol: str) -> tuple[pd.Series, str]:
     try:
         hourly = yf.download(
@@ -306,6 +367,7 @@ def build_html_report(results_df: pd.DataFrame) -> str:
     criteria = [
         f"Max price: ${MAX_PRICE:.2f}",
         f"Weekly options required: {REQUIRE_WEEKLY_OPTIONS}",
+        f"Exclude earnings within: {EXCLUDE_EARNINGS_WITHIN_WEEKS} weeks",
         f"Min abs slope/day: {MIN_ABS_SLOPE_PER_DAY}",
         f"Min std below mean at current date: {MIN_STD_DEV_BELOW_MEAN}",
         f"Lookback: {LOOKBACK_WEEKS} weeks",
@@ -459,6 +521,14 @@ def main() -> int:
         filtered = filtered[filtered["weekly_options"]].copy()
     else:
         filtered["weekly_options"] = False
+
+    if EXCLUDE_EARNINGS_WITHIN_WEEKS and EXCLUDE_EARNINGS_WITHIN_WEEKS > 0:
+        cutoff = date.today() + timedelta(weeks=EXCLUDE_EARNINGS_WITHIN_WEEKS)
+        keep_mask = []
+        for yf_symbol in filtered["yf_symbol"]:
+            next_earnings = get_next_earnings_date(yf_symbol)
+            keep_mask.append(next_earnings is None or next_earnings > cutoff)
+        filtered = filtered.loc[keep_mask].copy()
 
     filtered = filtered.sort_values(by="price")
 
