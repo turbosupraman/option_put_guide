@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 import base64
 from html import escape
 from io import StringIO
+import os
 from pathlib import Path
 import sys
 from typing import Iterable
@@ -38,6 +39,8 @@ CSV_OUTPUT = "filtered_sp500.csv"
 WRITE_HTML = True
 HTML_OUTPUT = "report.html"
 EMBED_PLOTS = True
+USE_CACHED_RESULTS_ON_NETWORK_FAILURE = True
+OFFLINE_ENV_VAR = "SP500_OFFLINE"
 
 YF_CACHE_DIR = ".cache/yfinance"
 YF_THREADS = False
@@ -362,6 +365,42 @@ def safe_filename(symbol: str) -> str:
     return symbol.replace(".", "_").replace("/", "_")
 
 
+def offline_mode_enabled() -> bool:
+    value = os.getenv(OFFLINE_ENV_VAR, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def load_cached_results(csv_path: Path) -> pd.DataFrame | None:
+    if not csv_path.exists():
+        return None
+
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as exc:
+        print(f"Warning: could not read cached CSV {csv_path}: {exc}")
+        return None
+
+    required = {
+        "symbol",
+        "name",
+        "price",
+        "weekly_options",
+        "slope_per_day",
+        "std_from_mean",
+        "interval",
+        "plot_path",
+    }
+    missing = required - set(df.columns)
+    if missing:
+        print(f"Warning: cached CSV missing columns: {', '.join(sorted(missing))}")
+        return None
+
+    for column in ("price", "slope_per_day", "std_from_mean"):
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    return df
+
+
 def build_html_report(results_df: pd.DataFrame) -> str:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     criteria = [
@@ -501,7 +540,32 @@ def plot_channel(
 
 def main() -> int:
     configure_yfinance()
-    sp500 = fetch_sp500_table()
+    cached_path = Path(CSV_OUTPUT)
+    if offline_mode_enabled():
+        cached = load_cached_results(cached_path)
+        if cached is None:
+            print(f"Offline mode enabled but cached CSV not found: {cached_path}")
+            return 1
+        if WRITE_HTML:
+            html_output = build_html_report(cached)
+            Path(HTML_OUTPUT).write_text(html_output, encoding="utf-8")
+            print(f"Wrote {HTML_OUTPUT} (from cached CSV)")
+        return 0
+
+    try:
+        sp500 = fetch_sp500_table()
+    except requests.RequestException as exc:
+        cached = None
+        if USE_CACHED_RESULTS_ON_NETWORK_FAILURE:
+            cached = load_cached_results(cached_path)
+        if cached is not None:
+            print(f"Warning: network fetch failed ({exc}). Using cached {cached_path}.")
+            if WRITE_HTML:
+                html_output = build_html_report(cached)
+                Path(HTML_OUTPUT).write_text(html_output, encoding="utf-8")
+                print(f"Wrote {HTML_OUTPUT} (from cached CSV)")
+            return 0
+        raise
     sp500["yf_symbol"] = sp500["symbol"].map(to_yf_symbol)
 
     if LIMIT_TICKERS:
